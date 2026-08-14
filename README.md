@@ -1,6 +1,6 @@
-# YouTube Music Game Bar
+# YTM XBOX Game Bar Widget
 
-YouTube Music Game Bar is a genuine Xbox Game Bar UWP widget. It hosts the official [YouTube Music](https://music.youtube.com/) website in the WinUI 2 `Microsoft.UI.Xaml.Controls.WebView2` control; it does not use an unofficial YouTube API, scrape the site, or imitate Game Bar with an always-on-top desktop window.
+YTM XBOX Game Bar Widget is a Xbox Game Bar UWP widget. It hosts the official [YouTube Music](https://music.youtube.com/) website in the WinUI 2 `Microsoft.UI.Xaml.Controls.WebView2` control; it does not use an unofficial YouTube API, scrape the site, or imitate Game Bar with an always-on-top desktop window.
 
 ## Architecture
 
@@ -183,14 +183,6 @@ The initial size is 900 x 900. Desktop mode supports 240 x 300 through 1600 x 10
 ### Network failure
 
 The widget shows WebView2's navigation status and offers Try again. It does not weaken certificate checks. Confirm the device clock, proxy, DNS, and internet connectivity.
-
-### Google authentication limitation
-
-Google controls whether an account may sign in through an embedded browser. WebView2 has a separate app profile, so it does not automatically share an existing Edge login. If Google blocks the flow, there is no supported application-side workaround; use the widget signed out or retry if Google later permits the flow. This project intentionally does not export cookies, intercept credentials, or alter Google's authentication flow.
-
-Mobile mode overrides the browser user-agent to request YouTube Music's mobile web presentation; Desktop mode uses WebView2's genuine default value. The mobile override can change or break Google's web UI without notice and might make embedded Google sign-in less reliable. It is not a supported way to obtain the native Android YouTube Music application, and the widget does not attempt additional spoofing if authentication is refused.
-
-Only sign in to a package that you built from this reviewed source (or obtained from a publisher you trust). A WebView host is technically capable of being modified to inspect web content or browser data even though this implementation does neither. The persistent WebView2 profile stores Google session cookies and other site data in the app's per-user UWP data folder so the session can survive widget restarts.
 
 ### Audio stops
 
