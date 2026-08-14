@@ -1,0 +1,12 @@
+.vs/
+**/bin/
+**/obj/
+AppPackages/
+*.appx
+*.appxbundle
+*.appxsym
+*.cer
+*.pfx
+*.user
+*.suo
+project.lock.json
