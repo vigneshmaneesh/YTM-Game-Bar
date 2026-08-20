@@ -9,6 +9,12 @@
     mc:Ignorable="d">
 
     <Page.Resources>
+        <!-- The origin label is neutral on music.youtube.com and switches to this
+             warning colour anywhere else, so the toolbar never asserts an origin
+             the WebView is not actually on. -->
+        <SolidColorBrush x:Key="TrustedOriginBrush" Color="#CCCCCC" />
+        <SolidColorBrush x:Key="ExternalOriginBrush" Color="#FFC83D" />
+
         <Style x:Key="ToolbarButtonStyle" TargetType="Button">
             <Setter Property="Width" Value="34" />
             <Setter Property="Height" Value="32" />
@@ -41,6 +47,7 @@
                     <ColumnDefinition Width="Auto" />
                     <ColumnDefinition Width="Auto" />
                     <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
                     <ColumnDefinition Width="Auto" />
                     <ColumnDefinition Width="Auto" />
                     <ColumnDefinition Width="Auto" />
@@ -87,14 +94,29 @@
                     <FontIcon FontFamily="Segoe MDL2 Assets" Glyph="&#xE80F;" />
                 </Button>
 
-                <TextBlock
+                <StackPanel
                     Grid.Column="4"
                     Margin="10,0,4,0"
                     VerticalAlignment="Center"
-                    FontSize="12"
-                    Foreground="#CCCCCC"
-                    Text="YouTube Music"
-                    TextTrimming="CharacterEllipsis" />
+                    Orientation="Horizontal"
+                    Spacing="4">
+                    <FontIcon
+                        x:Name="OriginWarningIcon"
+                        VerticalAlignment="Center"
+                        FontFamily="Segoe MDL2 Assets"
+                        FontSize="12"
+                        Foreground="{StaticResource ExternalOriginBrush}"
+                        Glyph="&#xE7BA;"
+                        Visibility="Collapsed" />
+                    <TextBlock
+                        x:Name="OriginLabel"
+                        MaxWidth="220"
+                        VerticalAlignment="Center"
+                        FontSize="12"
+                        Foreground="{StaticResource TrustedOriginBrush}"
+                        Text="YouTube Music"
+                        TextTrimming="CharacterEllipsis" />
+                </StackPanel>
 
                 <ProgressRing
                     x:Name="ToolbarProgressRing"
@@ -194,7 +216,35 @@
                 </Button>
 
                 <Button
+                    x:Name="ClipboardButton"
                     Grid.Column="9"
+                    AutomationProperties.Name="Clipboard"
+                    IsEnabled="False"
+                    Style="{StaticResource ToolbarButtonStyle}"
+                    ToolTipService.ToolTip="Copy or paste (Game Bar can swallow Ctrl+C and Ctrl+V)">
+                    <FontIcon FontFamily="Segoe MDL2 Assets" Glyph="&#xE77F;" />
+                    <Button.Flyout>
+                        <MenuFlyout Placement="BottomEdgeAlignedRight">
+                            <MenuFlyoutItem
+                                Click="CopySelectionMenuItem_Click"
+                                Text="Copy selection">
+                                <MenuFlyoutItem.Icon>
+                                    <FontIcon FontFamily="Segoe MDL2 Assets" Glyph="&#xE8C8;" />
+                                </MenuFlyoutItem.Icon>
+                            </MenuFlyoutItem>
+                            <MenuFlyoutItem
+                                Click="PasteMenuItem_Click"
+                                Text="Paste into the page">
+                                <MenuFlyoutItem.Icon>
+                                    <FontIcon FontFamily="Segoe MDL2 Assets" Glyph="&#xE77F;" />
+                                </MenuFlyoutItem.Icon>
+                            </MenuFlyoutItem>
+                        </MenuFlyout>
+                    </Button.Flyout>
+                </Button>
+
+                <Button
+                    Grid.Column="10"
                     AutomationProperties.Name="Hide toolbar"
                     Click="HideToolbarButton_Click"
                     Style="{StaticResource ToolbarButtonStyle}"

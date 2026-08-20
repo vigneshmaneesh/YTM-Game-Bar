@@ -3,11 +3,12 @@ using System.Globalization;
 using Microsoft.Gaming.XboxGameBar;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.Web.WebView2.Core;
+using Windows.ApplicationModel.DataTransfer;
+using Windows.Data.Json;
 using Windows.Foundation;
 using Windows.Media;
 using Windows.Storage;
 using Windows.Storage.Streams;
-using Windows.System;
 using Windows.UI.Xaml;
 using Windows.UI.Xaml.Controls;
 using Windows.UI.Xaml.Navigation;
@@ -48,6 +49,13 @@ namespace YouTubeMusicGameBar
             "document.addEventListener('DOMContentLoaded', installStyle, { once: true }); " +
             "else installStyle(); " +
             "})();";
+        private const string ReadSelectionScript =
+            "(() => { const el = document.activeElement; " +
+            "if (el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA') && " +
+            "typeof el.selectionStart === 'number') " +
+            "return el.value.substring(el.selectionStart, el.selectionEnd); " +
+            "const selection = window.getSelection(); " +
+            "return selection ? selection.toString() : ''; })()";
         private const string MobileUserAgent =
             "Mozilla/5.0 (Linux; Android 10; K) " +
             "AppleWebKit/537.36 (KHTML, like Gecko) " +
@@ -55,6 +63,7 @@ namespace YouTubeMusicGameBar
 
         private XboxGameBarWidget _gameBarWidget;
         private Uri _pendingNavigationUri;
+        private bool _showingBlockedNavigationNotice;
         private bool _initializationStarted;
         private bool _isInitialized;
         private bool _hasCompletedInitialNavigation;
@@ -130,6 +139,7 @@ namespace YouTubeMusicGameBar
                 _initializationStarted = false;
                 RefreshButton.IsEnabled = true;
                 ZoomButton.IsEnabled = true;
+                ClipboardButton.IsEnabled = true;
 
                 DebugLog.Write("WebView2 initialised successfully.");
                 MusicWebView.Source = YouTubeMusicHome;
@@ -159,6 +169,10 @@ namespace YouTubeMusicGameBar
             core.Settings.IsStatusBarEnabled = false;
             core.Settings.AreHostObjectsAllowed = false;
             core.Settings.IsZoomControlEnabled = false;
+            // No native alert/confirm/prompt. YouTube Music renders its own
+            // in-page dialogs, and a native one raised by an off-site page is a
+            // credential-prompt surface the user cannot attribute to an origin.
+            core.Settings.AreDefaultScriptDialogsEnabled = false;
 #if DEBUG
             core.Settings.AreDevToolsEnabled = true;
 #else
@@ -175,10 +189,16 @@ namespace YouTubeMusicGameBar
                 core.NewWindowRequested += CoreWebView2_NewWindowRequested;
                 core.IsDocumentPlayingAudioChanged += CoreWebView2_IsDocumentPlayingAudioChanged;
                 core.IsMutedChanged += CoreWebView2_IsMutedChanged;
+                core.SourceChanged += CoreWebView2_SourceChanged;
+                core.ServerCertificateErrorDetected += CoreWebView2_ServerCertificateErrorDetected;
+                core.DownloadStarting += CoreWebView2_DownloadStarting;
+                core.PermissionRequested += CoreWebView2_PermissionRequested;
+                core.BasicAuthenticationRequested += CoreWebView2_BasicAuthenticationRequested;
                 _webViewEventsSubscribed = true;
             }
 
             UpdateWebViewMemoryUsageTarget(_gameBarWidget == null || _gameBarWidget.Visible);
+            UpdateOriginIndicator();
             ConfigureSystemMediaControls();
         }
 
@@ -530,10 +550,11 @@ namespace YouTubeMusicGameBar
             if (!IsHttpsNavigation(destination))
             {
                 args.Cancel = true;
-                HandleExternalProtocolAsync(destination);
+                BlockUnsupportedProtocol(destination);
                 return;
             }
 
+            _showingBlockedNavigationNotice = false;
             _pendingNavigationUri = destination;
             SetNavigationBusy(true);
             DebugLog.Write("Navigation starting: {0}", destination.GetLeftPart(UriPartial.Authority));
@@ -546,6 +567,7 @@ namespace YouTubeMusicGameBar
 
             if (args.IsSuccess)
             {
+                _showingBlockedNavigationNotice = false;
                 _hasCompletedInitialNavigation = true;
                 LoadingOverlay.Visibility = Visibility.Collapsed;
                 ErrorOverlay.Visibility = Visibility.Collapsed;
@@ -556,6 +578,16 @@ namespace YouTubeMusicGameBar
             }
 
             DebugLog.Write("Navigation failed: {0}", args.WebErrorStatus);
+
+            if (_showingBlockedNavigationNotice)
+            {
+                // A block message (plain HTTP, or a rejected TLS certificate) is
+                // already on screen. Cancelling a navigation also completes it as a
+                // failure, and that must not replace the specific explanation with a
+                // generic "check your internet connection" message.
+                _showingBlockedNavigationNotice = false;
+                return;
+            }
 
             bool authenticationNavigation = _pendingNavigationUri != null &&
                 string.Equals(_pendingNavigationUri.Host, "accounts.google.com", StringComparison.OrdinalIgnoreCase);
@@ -587,6 +619,14 @@ namespace YouTubeMusicGameBar
         {
             args.Handled = true;
 
+            // A popup that no click or keypress asked for is a page moving the
+            // widget on its own. Only a real user gesture may replace the view.
+            if (!args.IsUserInitiated)
+            {
+                DebugLog.Write("Blocked popup that was not user initiated.");
+                return;
+            }
+
             Uri destination;
             if (!Uri.TryCreate(args.Uri, UriKind.Absolute, out destination))
             {
@@ -607,36 +647,120 @@ namespace YouTubeMusicGameBar
                 return;
             }
 
-            HandleExternalProtocolAsync(destination);
+            BlockUnsupportedProtocol(destination);
         }
 
-        private async void HandleExternalProtocolAsync(Uri destination)
+        private static void BlockUnsupportedProtocol(Uri destination)
         {
-            string scheme = destination.Scheme.ToLowerInvariant();
-            if (scheme != "mailto" && scheme != "tel")
-            {
-                DebugLog.Write("Ignored unsupported external protocol: {0}", scheme);
-                return;
-            }
-
-            try
-            {
-                bool launched = await Launcher.LaunchUriAsync(destination);
-                DebugLog.Write("External protocol {0} launch result: {1}", scheme, launched);
-            }
-            catch (Exception exception)
-            {
-                DebugLog.Write("External protocol launch failed: {0}", exception);
-            }
+            // The widget hosts one music site and never needs to hand a URI to
+            // another Windows application. No scheme is forwarded to the shell, so
+            // page content cannot launch a mail client, dialer, or store handler.
+            DebugLog.Write("Blocked non-HTTPS protocol: {0}", destination.Scheme);
         }
 
         private void ReportBlockedHttpNavigation(Uri destination)
         {
             DebugLog.Write("Blocked insecure HTTP navigation: {0}", destination.Host);
             SetNavigationBusy(false);
+            _showingBlockedNavigationNotice = true;
             ShowError(
                 "Insecure connection blocked",
                 "This widget only permits encrypted HTTPS pages. The plain HTTP request was not opened.");
+        }
+
+        private void CoreWebView2_SourceChanged(CoreWebView2 sender, CoreWebView2SourceChangedEventArgs args)
+        {
+            UpdateOriginIndicator();
+        }
+
+        private void UpdateOriginIndicator()
+        {
+            CoreWebView2 core = MusicWebView.CoreWebView2;
+            Uri current;
+
+            if (core == null ||
+                !Uri.TryCreate(core.Source, UriKind.Absolute, out current) ||
+                string.IsNullOrEmpty(current.Host))
+            {
+                // No committed origin yet (the initial about:blank). Keep whatever
+                // the label already shows rather than flashing a warning at startup.
+                return;
+            }
+
+            if (string.Equals(current.Host, YouTubeMusicHome.Host, StringComparison.OrdinalIgnoreCase))
+            {
+                OriginWarningIcon.Visibility = Visibility.Collapsed;
+                OriginLabel.Text = "YouTube Music";
+                OriginLabel.Foreground = (Windows.UI.Xaml.Media.Brush)Resources["TrustedOriginBrush"];
+                ToolTipService.SetToolTip(OriginLabel, "YouTube Music (" + YouTubeMusicHome.Host + ")");
+                return;
+            }
+
+            // IdnHost rather than Host: a look-alike internationalised domain is
+            // shown in its punycode form, so a homograph cannot dress itself up as
+            // the real host in the one place the user checks.
+            string displayHost = current.IdnHost;
+
+            OriginWarningIcon.Visibility = Visibility.Visible;
+            OriginLabel.Text = displayHost;
+            OriginLabel.Foreground = (Windows.UI.Xaml.Media.Brush)Resources["ExternalOriginBrush"];
+            ToolTipService.SetToolTip(
+                OriginLabel,
+                "You are on " + displayHost + ", not " + YouTubeMusicHome.Host +
+                ". Do not enter your Google password unless you trust this site.");
+            DebugLog.Write("Origin indicator switched to external host: {0}", displayHost);
+        }
+
+        private void CoreWebView2_ServerCertificateErrorDetected(
+            CoreWebView2 sender,
+            CoreWebView2ServerCertificateErrorDetectedEventArgs args)
+        {
+            // With no handler WebView2 falls back to Edge's TLS interstitial, which
+            // offers a "continue anyway" path. Refusing plain HTTP while allowing a
+            // click-through past a bad certificate would only be half a promise.
+            args.Action = CoreWebView2ServerCertificateErrorAction.Cancel;
+            DebugLog.Write("Blocked TLS certificate error: {0}", args.ErrorStatus);
+            _showingBlockedNavigationNotice = true;
+            ShowError(
+                "Insecure connection blocked",
+                "This site's TLS certificate could not be validated (" + args.ErrorStatus +
+                "). The connection was refused, and there is no option to continue.");
+        }
+
+        private void CoreWebView2_DownloadStarting(CoreWebView2 sender, CoreWebView2DownloadStartingEventArgs args)
+        {
+            // Nothing this widget does requires saving a file, so downloads are
+            // refused before the runtime's download UI ever appears.
+            args.Cancel = true;
+            args.Handled = true;
+            DebugLog.Write("Blocked download request.");
+        }
+
+        private void CoreWebView2_PermissionRequested(CoreWebView2 sender, CoreWebView2PermissionRequestedEventArgs args)
+        {
+            // Autoplay is deliberately left at the WebView2 default so playback can
+            // still start on its own. Every other permission is refused without a
+            // prompt, because a prompt raised by an off-site page gives the user no
+            // reliable way to tell who is asking.
+            if (args.PermissionKind == CoreWebView2PermissionKind.Autoplay)
+            {
+                return;
+            }
+
+            args.State = CoreWebView2PermissionState.Deny;
+            args.Handled = true;
+            DebugLog.Write("Denied permission request: {0}", args.PermissionKind);
+        }
+
+        private void CoreWebView2_BasicAuthenticationRequested(
+            CoreWebView2 sender,
+            CoreWebView2BasicAuthenticationRequestedEventArgs args)
+        {
+            // YouTube Music never uses HTTP authentication, so such a prompt comes
+            // from somewhere else. Cancelling fails the navigation, which the
+            // existing NavigationCompleted error path already reports.
+            args.Cancel = true;
+            DebugLog.Write("Blocked HTTP authentication prompt.");
         }
 
         private static bool IsHttpsNavigation(Uri destination)
@@ -819,6 +943,109 @@ namespace YouTubeMusicGameBar
             }
         }
 
+        private async void CopySelectionMenuItem_Click(object sender, RoutedEventArgs args)
+        {
+            await CopySelectionToClipboardAsync();
+        }
+
+        private async void PasteMenuItem_Click(object sender, RoutedEventArgs args)
+        {
+            await PasteClipboardIntoPageAsync();
+        }
+
+        private async System.Threading.Tasks.Task CopySelectionToClipboardAsync()
+        {
+            CoreWebView2 core = MusicWebView.CoreWebView2;
+            if (!_isInitialized || core == null)
+            {
+                return;
+            }
+
+            try
+            {
+                string selection = DecodeScriptString(await core.ExecuteScriptAsync(ReadSelectionScript));
+                if (string.IsNullOrEmpty(selection))
+                {
+                    DebugLog.Write("Copy requested with nothing selected.");
+                    return;
+                }
+
+                DataPackage package = new DataPackage();
+                package.RequestedOperation = DataPackageOperation.Copy;
+                package.SetText(selection);
+                Clipboard.SetContent(package);
+                DebugLog.Write("Copied {0} characters from the page selection.", selection.Length);
+            }
+            catch (Exception exception)
+            {
+                DebugLog.Write("Copy failed: {0}", exception);
+            }
+        }
+
+        private async System.Threading.Tasks.Task PasteClipboardIntoPageAsync()
+        {
+            CoreWebView2 core = MusicWebView.CoreWebView2;
+            if (!_isInitialized || core == null)
+            {
+                return;
+            }
+
+            string text;
+            try
+            {
+                DataPackageView clipboard = Clipboard.GetContent();
+                if (!clipboard.Contains(StandardDataFormats.Text))
+                {
+                    DebugLog.Write("Paste requested but the clipboard holds no text.");
+                    return;
+                }
+
+                text = await clipboard.GetTextAsync();
+            }
+            catch (Exception exception)
+            {
+                // Windows can refuse clipboard reads to a window it does not treat
+                // as foreground, which a Game Bar overlay is not always considered.
+                DebugLog.Write("Clipboard could not be read: {0}", exception);
+                return;
+            }
+
+            if (string.IsNullOrEmpty(text))
+            {
+                return;
+            }
+
+            try
+            {
+                // Input.insertText types the text into whatever element currently has
+                // focus. It is driven from the host on an explicit user action, so the
+                // clipboard is never exposed to page script and no host object or
+                // clipboard permission has to be granted to the site to make it work.
+                string payload = "{\"text\":" + JsonValue.CreateStringValue(text).Stringify() + "}";
+                await core.CallDevToolsProtocolMethodAsync("Input.insertText", payload);
+                DebugLog.Write("Pasted {0} characters into the focused element.", text.Length);
+            }
+            catch (Exception exception)
+            {
+                DebugLog.Write("Paste failed: {0}", exception);
+            }
+        }
+
+        private static string DecodeScriptString(string encoded)
+        {
+            // ExecuteScriptAsync returns its result as JSON, so a plain string comes
+            // back quoted and escaped rather than as the raw text.
+            JsonValue value;
+            if (string.IsNullOrEmpty(encoded) ||
+                !JsonValue.TryParse(encoded, out value) ||
+                value.ValueType != JsonValueType.String)
+            {
+                return null;
+            }
+
+            return value.GetString();
+        }
+
         private void SetNavigationBusy(bool isBusy)
         {
             ToolbarProgressRing.IsActive = isBusy;
@@ -899,6 +1126,11 @@ namespace YouTubeMusicGameBar
                 core.NewWindowRequested -= CoreWebView2_NewWindowRequested;
                 core.IsDocumentPlayingAudioChanged -= CoreWebView2_IsDocumentPlayingAudioChanged;
                 core.IsMutedChanged -= CoreWebView2_IsMutedChanged;
+                core.SourceChanged -= CoreWebView2_SourceChanged;
+                core.ServerCertificateErrorDetected -= CoreWebView2_ServerCertificateErrorDetected;
+                core.DownloadStarting -= CoreWebView2_DownloadStarting;
+                core.PermissionRequested -= CoreWebView2_PermissionRequested;
+                core.BasicAuthenticationRequested -= CoreWebView2_BasicAuthenticationRequested;
                 _webViewEventsSubscribed = false;
             }
 

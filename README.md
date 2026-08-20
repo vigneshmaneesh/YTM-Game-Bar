@@ -111,7 +111,7 @@ Game Bar widgets use Windows package registration, so the distributable format i
 
 To install it on another PC, copy the complete generated version folder, including its `Dependencies` directory. Trust the included public certificate if Windows requests it, then right-click `Add-AppDevPackage.ps1` and select **Run with PowerShell**. Keep the certificate's private key private; recipients only need its public `.cer` certificate.
 
-The normal build helper also emits an unsigned test MSIX because project signing is disabled. That file proves packaging succeeds, but Windows will not install it by double-clicking until it has been signed. Visual Studio's **Create App Packages** wizard performs the signing step.
+The normal build helper also emits a test MSIX. Project signing is enabled (`AppxPackageSigningEnabled`), and the certificate is selected by the `PackageCertificateThumbprint` pinned in `YouTubeMusicGameBar.csproj`, which resolves against a certificate installed on the build machine. That thumbprint refers to a local self-signed development certificate, and the matching `.pfx` is git-ignored, so a fresh clone will not reproduce a signed build until you create your own certificate and update the thumbprint. Visual Studio's **Create App Packages** wizard does this for you.
 
 ## Why there is no truly portable version
 
@@ -144,11 +144,15 @@ The initial size is 900 x 900. Desktop mode supports 240 x 300 through 1600 x 10
 
 ## Security and privacy behavior
 
-- Only encrypted `https:` web navigation is permitted. Plain `http:` top-level navigation and popup requests are cancelled with an in-widget warning.
-- HTTPS host navigation is left to YouTube/Google so required Google-owned supporting domains are not broken by a brittle host allowlist.
-- `mailto:` and `tel:` may be sent to the registered Windows handler. Other non-HTTPS protocols, including `intent:`, are ignored.
-- New HTTPS windows are redirected into the one existing WebView.
-- TLS validation remains enabled and untouched.
+- Only encrypted `https:` navigation is permitted. Plain `http:` top-level navigation and popup requests are cancelled with an in-widget warning. This check applies to top-level navigation; HTTP subresources inside an HTTPS page are stopped by Chromium's own mixed-content blocking.
+- HTTPS host navigation is left to YouTube/Google so required Google-owned supporting domains are not broken by a brittle host allowlist. Because any HTTPS host is therefore reachable, the toolbar states which one you are on: it reads **YouTube Music** only while the WebView is on `music.youtube.com`, and otherwise switches to a warning-coloured label showing the actual host. Internationalised hosts are shown in punycode so a look-alike domain cannot impersonate the real one.
+- No URI is ever forwarded to another Windows application. `mailto:`, `tel:`, `intent:`, and every other non-HTTPS protocol are ignored, so page content cannot launch a mail client, dialer, or store handler.
+- New HTTPS windows are redirected into the one existing WebView, and only when the popup came from a real click or keypress. A popup opened by script alone is discarded.
+- TLS validation remains enabled and untouched, and a certificate error cannot be clicked through: an invalid certificate cancels the navigation rather than showing the runtime's "continue anyway" interstitial.
+- Downloads are refused. The widget has no need to save files, so downloads are cancelled before the runtime's download UI appears.
+- Permission requests (clipboard read, notifications, and similar) are denied without prompting. Autoplay is left at the runtime default so playback still works. Microphone, camera, and location are additionally impossible because the package never declares those capabilities.
+- Native script dialogs are disabled, so a page cannot raise an `alert()`, `confirm()`, or `prompt()` box, and HTTP authentication prompts are cancelled.
+- The toolbar's clipboard commands run in the host, not the page. Copy reads the current selection; paste inserts the clipboard text into the focused element through the DevTools protocol. Both act only when you choose the menu item, so page script is never granted clipboard access and no host object is exposed to make them work.
 - Host objects are disabled. Fixed document-start style helpers hide scrollbar artwork and apply the user-selected page zoom without reading page data. The only other host-initiated page commands are narrow play/pause calls made when Windows media buttons are pressed.
 - The app does not access or log cookies, passwords, headers, tokens, or browser data.
 - The default UWP WebView2 user-data folder is retained to preserve allowed cookies, local storage, and preferences.
@@ -191,6 +195,22 @@ Google controls whether an account may sign in through an embedded browser. WebV
 Mobile mode overrides the browser user-agent to request YouTube Music's mobile web presentation; Desktop mode uses WebView2's genuine default value. The mobile override can change or break Google's web UI without notice and might make embedded Google sign-in less reliable. It is not a supported way to obtain the native Android YouTube Music application, and the widget does not attempt additional spoofing if authentication is refused.
 
 Only sign in to a package that you built from this reviewed source (or obtained from a publisher you trust). A WebView host is technically capable of being modified to inspect web content or browser data even though this implementation does neither. The persistent WebView2 profile stores Google session cookies and other site data in the app's per-user UWP data folder so the session can survive widget restarts.
+
+### Ctrl+C and Ctrl+V do nothing in the page
+
+Xbox Game Bar's overlay can intercept accelerator keys before they reach the hosted
+browser, so the page never sees the keystroke. This is a hosting-layer behaviour, not
+something the widget can switch off.
+
+Use the toolbar's clipboard button (**Copy selection** / **Paste into the page**)
+instead. It does not rely on the keystroke arriving: the host reads or writes the
+Windows clipboard itself and inserts the text into the focused element, which is
+particularly useful for pasting a password from a password manager during sign-in.
+
+If Windows refuses the clipboard read, the paste is abandoned silently. Windows can
+deny clipboard access to a window it does not treat as foreground, and a Game Bar
+overlay is not always considered one. Bring the Game Bar overlay fully to the front
+and try again.
 
 ### Audio stops
 
